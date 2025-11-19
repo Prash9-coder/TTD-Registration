@@ -32,7 +32,15 @@ function constructPhotoUrl(photoPath) {
 const submitLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5,
-    message: 'Too many submissions from this IP, try again later.'
+    message: 'Too many submissions from this IP, try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Trust proxy headers from Render
+    trustProxy: true,
+    // Custom key generator
+    keyGenerator: (req) => {
+        return req.ip || req.connection.remoteAddress;
+    }
 });
 
 // Validation
@@ -47,38 +55,72 @@ const teamValidation = [
 const nodemailer = require('nodemailer');
 
 async function sendAdminNotification(team) {
+    console.log('📧 Attempting to send admin notification...');
+    console.log('Admin email:', process.env.ADMIN_EMAIL);
+    console.log('SMTP User:', process.env.SMTP_USER);
+
     try {
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
             port: Number(process.env.SMTP_PORT) || 587,
-            secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+            secure: process.env.SMTP_SECURE === 'true',
             auth: {
                 user: process.env.SMTP_USER,
                 pass: process.env.SMTP_PASS
-            }
+            },
+            debug: true, // Enable debug output
+            logger: true // Log to console
         });
 
-        const html = `
-      <h2>New Team Registered</h2>
-      <p><strong>${team.team_name}</strong> (${team.members_count} members)</p>
-      <p>Registered at: ${new Date(team.created_at || team.createdAt).toLocaleString()}</p>
-      <p><a href="${process.env.ADMIN_DASHBOARD_URL || 'http://localhost:5000/admin'}">Open Admin Dashboard</a></p>
-    `;
+        // Verify connection
+        await transporter.verify();
+        console.log('✅ SMTP connection verified');
 
-        await transporter.sendMail({
+        const html = `
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: Arial, sans-serif; padding: 20px;">
+                <div style="max-width: 600px; margin: 0 auto; background: #f9fafb; padding: 30px; border-radius: 10px;">
+                    <h2 style="color: #1f2937; border-bottom: 3px solid #2563eb; padding-bottom: 10px;">
+                        🔔 New Team Registration Alert
+                    </h2>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                        <p><strong>Team Name:</strong> ${team.team_name}</p>
+                        <p><strong>Members:</strong> ${team.members_count}</p>
+                        <p><strong>Registered:</strong> ${new Date(team.created_at).toLocaleString('en-IN')}</p>
+                        <p><strong>Team Leader:</strong> ${team.members[0]?.name}</p>
+                        <p><strong>Contact:</strong> ${team.members[0]?.mobile_full} | ${team.members[0]?.email}</p>
+                    </div>
+
+                    <div style="text-align: center; margin-top: 25px;">
+                        <a href="${process.env.ADMIN_DASHBOARD_URL || process.env.FRONTEND_URL + '/admin'}" 
+                           style="background: #2563eb; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                            Open Admin Panel →
+                        </a>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+
+        const info = await transporter.sendMail({
             from: `"TTD Registration" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-            to: process.env.ADMIN_EMAIL, // put admin email in env
-            subject: `New team: ${team.team_name}`,
+            to: process.env.ADMIN_EMAIL,
+            subject: `🔔 New Registration: ${team.team_name} (${team.members_count} members)`,
             html
         });
 
-        console.log('Admin notification sent');
+        console.log('✅ Admin notification sent:', info.messageId);
+        console.log('Preview URL:', nodemailer.getTestMessageUrl(info));
     } catch (err) {
-        console.error('Failed to send admin email:', err);
+        console.error('❌ Admin email failed:', err);
+        console.error('Error details:', err.message);
     }
 }
 
 async function sendUserConfirmation(team) {
+    console.log('📧 Sending user confirmation email to:', team.members[0].email);
     try {
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
