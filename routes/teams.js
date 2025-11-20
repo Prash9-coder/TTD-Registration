@@ -6,6 +6,13 @@ const { encrypt, decrypt } = require('../utils/encryption');
 const { validateAadhaar } = require('../utils/aadhaarValidator');
 const rateLimit = require('express-rate-limit');
 
+
+const {
+    sendNewTeamNotification,
+    sendTeamVerifiedNotification,
+    sendTeamDeletedNotification
+} = require('../services/telegramService');
+
 // Helper function to construct photo URLs
 function constructPhotoUrl(photoPath) {
     if (!photoPath) return null;
@@ -410,6 +417,10 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
             console.error("User email error:", err);
         });
 
+        sendNewTeamNotification(newTeam).catch(err => {
+            console.error("Telegram error:", err);
+        });
+
         res.status(201).json({
             success: true,
             message: 'Team registered successfully',
@@ -437,6 +448,8 @@ router.delete("/:id", async (req, res) => {
                 message: "Team not found"
             });
         }
+
+        sendTeamDeletedNotification(deleted.team_name, deleted._id).catch(console.error);
 
         res.json({
             success: true,
@@ -509,6 +522,8 @@ router.put("/:id/verify", async (req, res) => {
             console.error("Verification email error:", err);
         });
 
+        sendTeamVerifiedNotification(team).catch(console.error);
+
         res.json({
             success: true,
             message: "Team verified successfully and emails sent!",
@@ -538,6 +553,8 @@ router.put("/:id/verify", async (req, res) => {
             });
         }
 
+        sendTeamVerifiedNotification(team).catch(console.error);
+
         res.json({
             success: true,
             message: "Team verified successfully",
@@ -562,6 +579,25 @@ router.get('/', async (req, res) => {
     } catch (e) {
         console.error('Get teams error:', e);
         res.status(500).json({ success: false, message: 'Failed to retrieve teams' });
+    }
+});
+
+// Test Telegram Bot
+router.get('/test-telegram', async (req, res) => {
+    try {
+        const { sendTestMessage } = require('../services/telegramService');
+        const result = await sendTestMessage();
+
+        res.json({
+            success: true,
+            message: 'Test message sent! Check your Telegram.',
+            data: result
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
     }
 });
 
