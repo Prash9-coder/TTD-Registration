@@ -565,6 +565,40 @@ router.get('/', async (req, res) => {
     }
 });
 
+// Check if team name exists (for real-time validation)
+router.get('/check-name/:teamName', async (req, res) => {
+    try {
+        const teamName = req.params.teamName.trim();
+
+        if (!teamName) {
+            return res.json({
+                success: true,
+                exists: false
+            });
+        }
+
+        // Case-insensitive search
+        const existingTeam = await Team.findOne({
+            team_name: { $regex: new RegExp(`^${teamName}$`, 'i') }
+        });
+
+        res.json({
+            success: true,
+            exists: !!existingTeam,
+            message: existingTeam
+                ? 'Team name already exists'
+                : 'Team name is available'
+        });
+
+    } catch (error) {
+        console.error('Team name check error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error checking team name'
+        });
+    }
+});
+
 // Age calculation
 function calculateAge(dob) {
     const d = new Date(dob);
