@@ -14,29 +14,6 @@ const {
 
 
 // ===============================================
-// FIX 1: ALWAYS RETURN FULL CLOUDINARY PHOTO URL
-// ===============================================
-function constructPhotoUrl(photoPath) {
-    if (!photoPath) return null;
-
-    // Cloudinary already gives full URL
-    if (photoPath.startsWith("http")) return photoPath;
-
-    // If some old leftover data exists (local uploads)
-    if (photoPath.startsWith('/uploads/')) {
-        const baseUrl =
-            process.env.NODE_ENV === 'production'
-                ? process.env.API_BASE_URL || 'https://ttd-registration.onrender.com'
-                : `http://localhost:${process.env.PORT || 5000}`;
-        return `${baseUrl}${photoPath}`;
-    }
-
-    return photoPath;
-}
-
-
-
-// ===============================================
 // RATE LIMIT
 // ===============================================
 const submitLimiter = rateLimit({
@@ -48,7 +25,6 @@ const submitLimiter = rateLimit({
     trustProxy: true,
     keyGenerator: (req) => req.ip
 });
-
 
 
 // ===============================================
@@ -72,7 +48,6 @@ if (process.env.SENDGRID_API_KEY) {
 }
 
 
-
 // MASK HELPER
 const mask = (value, visible = 4) =>
     `${'*'.repeat(Math.max(0, value.length - visible))}${value.slice(-visible)}`;
@@ -92,9 +67,8 @@ function calculateAge(dob) {
 }
 
 
-
 // ===================================================================
-// 🚀 POST /api/teams  — REGISTER TEAM  (FIXED PHOTO ISSUE!!!)
+// 🚀 POST /api/teams  — REGISTER TEAM
 // ===================================================================
 router.post('/', submitLimiter, teamValidation, async (req, res) => {
     try {
@@ -117,7 +91,6 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
 
         const processedMembers = [];
         const aadhaarSet = new Set();
-
 
         for (let i = 0; i < members.length; i++) {
             const m = members[i];
@@ -156,22 +129,15 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
                     message: `Member ${i + 1} must be ≥ 5 years`
                 });
 
+            // ✅ Photo validation - must be full Cloudinary URL
+            const photoUrl = m.photo_path;
 
-            // ======================================================
-            // 🔥 FIX 2: ALWAYS SAVE CLOUDINARY FULL URL
-            // ======================================================
-            const finalPhotoUrl = m.photo_path
-                ? (m.photo_path.startsWith("http")
-                    ? m.photo_path
-                    : constructPhotoUrl(m.photo_path))
-                : null;
-
-            if (!finalPhotoUrl)
+            if (!photoUrl || !photoUrl.startsWith('http')) {
                 return res.status(400).json({
                     success: false,
-                    message: `Photo missing for member ${i + 1}`
+                    message: `Invalid or missing photo for member ${i + 1}`
                 });
-
+            }
 
             processedMembers.push({
                 name: m.name,
@@ -198,14 +164,13 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
                 pincode: m.pincode,
                 nearest_ttd_temple: m.nearest_ttd_temple,
 
-                // FINAL FIXED PHOTO PATH
-                photo_path: finalPhotoUrl,
+                // ✅ Store full Cloudinary URL as-is
+                photo_path: photoUrl,
                 photo_uploaded_at: new Date(),
 
                 aadhaar_verified: false
             });
         }
-
 
         // CREATE TEAM
         const newTeam = new Team({
@@ -219,11 +184,8 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
 
         await newTeam.save();
 
-
         // SEND EMAILS / TELEGRAM
         sendNewTeamNotification(newTeam).catch(() => { });
-        sendTeamVerifiedNotification(newTeam).catch(() => { });
-
 
         return res.status(201).json({
             success: true,
@@ -243,22 +205,73 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
 });
 
 
+// ===================================================================
+// ✅ GET ALL TEAMS WITH MEMBERS & PHOTOS
+// ===================================================================
+router.get('/', async (req, res) => {
+    try {
+        const teams = await Team.find({})
+            .select('_id team_name members_count submission_status created_at members')  // ✅ Added 'members'
+            .sort({ created_at: -1 })
+            .lean();
+
+        // Transform members to include safe data
+        const transformedTeams = teams.map(team => ({
+            _id: team._id,
+            team_name: team.team_name,
+            members_count: team.members_count,
+            submission_status: team.submission_status,
+            created_at: team.created_at,
+            members: team.members.map(m => ({
+                name: m.name,
+                dob: m.dob,
+                age: m.age,
+                gender: m.gender,
+                id_number: m.id_number_masked,  // Masked for security
+                mobile: m.mobile_masked,
+                email: m.email,
+                state: m.state,
+                district: m.district,
+                city: m.city,
+                street: m.street,
+                doorno: m.doorno,
+                pincode: m.pincode,
+                nearest_ttd_temple: m.nearest_ttd_temple,
+                photo_path: m.photo_path,  // ✅ Full Cloudinary URL
+                aadhaar_verified: m.aadhaar_verified
+            }))
+        }));
+
+        res.json({
+            success: true,
+            count: transformedTeams.length,
+            data: transformedTeams
+        });
+
+    } catch (e) {
+        console.error('Get teams error:', e);
+        res.status(500).json({ success: false, message: 'Failed to retrieve teams' });
+    }
+});
+
 
 // ===================================================================
-// GET /api/teams/:id — FIXED PHOTO PREVIEW
+// ✅ GET SINGLE TEAM BY ID
 // ===================================================================
 router.get('/:id', async (req, res) => {
     try {
         const team = await Team.findById(req.params.id).lean();
+
         if (!team)
             return res.status(404).json({ success: false, message: 'Team not found' });
 
+        // Transform members with full details
         team.members = team.members.map(m => ({
             name: m.name,
             dob: m.dob,
             age: m.age,
             gender: m.gender,
-            id_number: m.id_number_full,
+            id_number: m.id_number_full,  // Full for detailed view
             mobile: m.mobile_full,
             email: m.email,
             state: m.state,
@@ -268,37 +281,93 @@ router.get('/:id', async (req, res) => {
             doorno: m.doorno,
             pincode: m.pincode,
             nearest_ttd_temple: m.nearest_ttd_temple,
-
-            // FIXED FULL CLOUDINARY URL ALWAYS RETURN
-            photo_path: m.photo_path,
-            photoPreview: constructPhotoUrl(m.photo_path),
-
+            photo_path: m.photo_path,  // ✅ Already full Cloudinary URL
             aadhaar_verified: m.aadhaar_verified
         }));
 
         res.json({ success: true, data: team });
 
     } catch (e) {
-        console.error('Get full team error:', e);
+        console.error('Get team error:', e);
         res.status(500).json({ success: false, message: 'Failed to retrieve team' });
     }
 });
 
 
-
 // ===================================================================
-// GET ALL TEAMS
+// CHECK TEAM NAME AVAILABILITY
 // ===================================================================
-router.get('/', async (req, res) => {
+router.get('/check-name/:teamName', async (req, res) => {
     try {
-        const teams = await Team.find({})
-            .select('_id team_name members_count submission_status created_at')
-            .sort({ created_at: -1 });
+        const teamName = req.params.teamName.trim();
 
-        res.json({ success: true, data: teams });
+        if (!teamName || teamName.length < 3) {
+            return res.json({
+                success: true,
+                exists: false,
+                message: 'Team name too short'
+            });
+        }
+
+        const exists = await Team.findOne({
+            team_name: { $regex: new RegExp(`^${teamName}$`, 'i') }
+        });
+
+        res.json({
+            success: true,
+            exists: !!exists,
+            message: exists ? 'Team name already exists' : 'Team name available'
+        });
+
     } catch (e) {
-        console.error('Get teams error:', e);
-        res.status(500).json({ success: false, message: 'Failed to retrieve teams' });
+        console.error('Check name error:', e);
+        res.status(500).json({ success: false, message: 'Check failed' });
+    }
+});
+
+
+// ===================================================================
+// VERIFY TEAM
+// ===================================================================
+router.put('/:id/verify', async (req, res) => {
+    try {
+        const team = await Team.findByIdAndUpdate(
+            req.params.id,
+            { submission_status: 'verified' },
+            { new: true }
+        );
+
+        if (!team)
+            return res.status(404).json({ success: false, message: 'Team not found' });
+
+        sendTeamVerifiedNotification(team).catch(() => { });
+
+        res.json({ success: true, message: 'Team verified', data: team });
+
+    } catch (e) {
+        console.error('Verify team error:', e);
+        res.status(500).json({ success: false, message: 'Verification failed' });
+    }
+});
+
+
+// ===================================================================
+// DELETE TEAM
+// ===================================================================
+router.delete('/:id', async (req, res) => {
+    try {
+        const team = await Team.findByIdAndDelete(req.params.id);
+
+        if (!team)
+            return res.status(404).json({ success: false, message: 'Team not found' });
+
+        sendTeamDeletedNotification(team).catch(() => { });
+
+        res.json({ success: true, message: 'Team deleted successfully' });
+
+    } catch (e) {
+        console.error('Delete team error:', e);
+        res.status(500).json({ success: false, message: 'Delete failed' });
     }
 });
 
