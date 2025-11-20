@@ -53,29 +53,18 @@ const teamValidation = [
 
 
 const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
+
+// Set SendGrid API Key
+if (process.env.SENDGRID_API_KEY) {
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
 
 async function sendAdminNotification(team) {
-    console.log('📧 Attempting to send admin notification...');
-    console.log('Admin email:', process.env.ADMIN_EMAIL);
-    console.log('SMTP User:', process.env.SMTP_USER);
+    console.log('📧 Sending admin notification via SendGrid...');
+    console.log('To:', process.env.ADMIN_EMAIL);
 
     try {
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: process.env.SMTP_SECURE === 'true',
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS
-            },
-            debug: true, // Enable debug output
-            logger: true // Log to console
-        });
-
-        // Verify connection
-        await transporter.verify();
-        console.log('✅ SMTP connection verified');
-
         const html = `
             <!DOCTYPE html>
             <html>
@@ -104,36 +93,31 @@ async function sendAdminNotification(team) {
             </html>
         `;
 
-        const info = await transporter.sendMail({
-            from: `"TTD Registration" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+        const msg = {
             to: process.env.ADMIN_EMAIL,
+            from: {
+                email: process.env.SENDGRID_FROM_EMAIL || 'nimmalaprashanth9@gmail.com',
+                name: 'TTD Registration'
+            },
             subject: `🔔 New Registration: ${team.team_name} (${team.members_count} members)`,
-            html
-        });
+            html: html
+        };
 
-        console.log('✅ Admin notification sent:', info.messageId);
-        console.log('Preview URL:', nodemailer.getTestMessageUrl(info));
+        await sgMail.send(msg);
+        console.log('✅ Admin notification sent successfully via SendGrid');
     } catch (err) {
-        console.error('❌ Admin email failed:', err);
-        console.error('Error details:', err.message);
+        console.error('❌ SendGrid admin email failed:', err);
+        if (err.response) {
+            console.error('Response body:', err.response.body);
+        }
     }
 }
 
 async function sendUserConfirmation(team) {
-    console.log('📧 Sending user confirmation email to:', team.members[0].email);
+    console.log('📧 Sending user confirmation via SendGrid...');
+    console.log('To:', team.members[0].email);
+
     try {
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: process.env.SMTP_SECURE === 'true',
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS
-            }
-        });
-
-        const teamLeaderEmail = team.members[0].email;
-
         const html = `
             <!DOCTYPE html>
             <html>
@@ -141,43 +125,12 @@ async function sendUserConfirmation(team) {
                 <style>
                     body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
                     .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                    .header { 
-                        background: linear-gradient(135deg, #ea580c, #dc2626); 
-                        color: white; 
-                        padding: 30px; 
-                        text-align: center; 
-                        border-radius: 10px 10px 0 0; 
-                    }
+                    .header { background: linear-gradient(135deg, #ea580c, #dc2626); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
                     .content { background: #ffffff; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-                    .info-box { 
-                        background: #f9fafb; 
-                        padding: 20px; 
-                        border-radius: 8px; 
-                        margin: 20px 0; 
-                        border-left: 4px solid #ea580c;
-                    }
-                    .member-card { 
-                        background: #f3f4f6; 
-                        padding: 12px; 
-                        margin: 8px 0; 
-                        border-radius: 6px; 
-                        border-left: 3px solid #2563eb;
-                    }
-                    .alert-box {
-                        background: #fef3c7;
-                        border: 1px solid #fbbf24;
-                        padding: 15px;
-                        border-radius: 8px;
-                        margin: 20px 0;
-                    }
-                    .footer { 
-                        text-align: center; 
-                        color: #6b7280; 
-                        font-size: 12px; 
-                        margin-top: 30px; 
-                        padding-top: 20px;
-                        border-top: 1px solid #e5e7eb;
-                    }
+                    .info-box { background: #f9fafb; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ea580c; }
+                    .member-card { background: #f3f4f6; padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 3px solid #2563eb; }
+                    .alert-box { background: #fef3c7; border: 1px solid #fbbf24; padding: 15px; border-radius: 8px; margin: 20px 0; }
+                    .footer { text-align: center; color: #6b7280; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
                 </style>
             </head>
             <body>
@@ -198,11 +151,7 @@ async function sendUserConfirmation(team) {
                             <h3 style="margin-top: 0; color: #ea580c;">📋 Registration Summary</h3>
                             <p style="margin: 8px 0;"><strong>Team Name:</strong> ${team.team_name}</p>
                             <p style="margin: 8px 0;"><strong>Total Members:</strong> ${team.members_count}</p>
-                            <p style="margin: 8px 0;"><strong>Registration Date:</strong> ${new Date(team.created_at).toLocaleDateString('en-IN', {
-            day: '2-digit',
-            month: 'long',
-            year: 'numeric'
-        })}</p>
+                            <p style="margin: 8px 0;"><strong>Registration Date:</strong> ${new Date(team.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</p>
                             <p style="margin: 8px 0;">
                                 <strong>Status:</strong> 
                                 <span style="color: #f59e0b; font-weight: bold;">⏳ Pending Verification</span>
@@ -224,11 +173,10 @@ async function sendUserConfirmation(team) {
                         <div class="alert-box">
                             <strong style="color: #92400e;">⚠️ Important Next Steps:</strong>
                             <ul style="margin: 12px 0; padding-left: 20px; line-height: 1.8;">
-                                <li>Your registration is <strong>under verification</strong> by our team</li>
+                                <li>Your registration is <strong>under verification</strong></li>
                                 <li>You will receive <strong>confirmation within 24-48 hours</strong></li>
                                 <li>Keep your registered <strong>mobile number active</strong></li>
                                 <li>Carry <strong>original ID proofs (Aadhaar)</strong> for all members</li>
-                                <li>Check your <strong>spam/junk folder</strong> for our emails</li>
                             </ul>
                         </div>
 
@@ -236,102 +184,52 @@ async function sendUserConfirmation(team) {
                             <p style="margin: 0; font-size: 18px;"><strong>🕉️ Govinda Govinda!</strong></p>
                             <p style="margin: 8px 0 0 0; font-size: 14px;">May Lord Venkateswara bless your journey!</p>
                         </div>
-
-                        <div style="text-align: center; margin-top: 25px; padding: 15px; background: #f9fafb; border-radius: 8px;">
-                            <p style="font-size: 14px; margin: 5px 0;">Need help? Contact us:</p>
-                            <p style="font-size: 14px; margin: 5px 0;">
-                                📧 <a href="mailto:${process.env.SMTP_USER}" style="color: #2563eb; text-decoration: none;">
-                                    ${process.env.SMTP_USER}
-                                </a>
-                            </p>
-                        </div>
                     </div>
 
                     <div class="footer">
                         <p><strong>TTD Team Registration System</strong></p>
                         <p>© ${new Date().getFullYear()} All Rights Reserved</p>
-                        <p style="color: #9ca3af; margin-top: 10px;">
-                            This is an automated email. Please do not reply.
-                        </p>
                     </div>
                 </div>
             </body>
             </html>
         `;
 
-        await transporter.sendMail({
-            from: `"TTD Registration" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-            to: teamLeaderEmail,
+        const msg = {
+            to: team.members[0].email,
+            from: {
+                email: process.env.SENDGRID_FROM_EMAIL || 'nimmalaprashanth9@gmail.com',
+                name: 'TTD Registration'
+            },
             subject: `✅ Registration Successful – ${team.team_name} | TTD Darshan`,
-            html
-        });
+            html: html
+        };
 
-        console.log('✅ User confirmation email sent to:', teamLeaderEmail);
+        await sgMail.send(msg);
+        console.log('✅ User confirmation sent successfully via SendGrid');
     } catch (err) {
-        console.error('Failed to send user email:', err);
+        console.error('❌ SendGrid user email failed:', err);
+        if (err.response) {
+            console.error('Response body:', err.response.body);
+        }
     }
 }
 
 async function sendVerificationEmail(team) {
+    console.log('📧 Sending verification emails via SendGrid to all members...');
+
     try {
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: process.env.SMTP_SECURE === 'true',
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS
-            }
-        });
-
-        // Send to all team members
-        const emails = team.members.map(m => m.email).filter(Boolean);
-
         const html = `
             <!DOCTYPE html>
             <html>
             <head>
                 <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+                    body { font-family: Arial, sans-serif; }
                     .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                    .header { 
-                        background: linear-gradient(135deg, #10b981, #059669); 
-                        color: white; 
-                        padding: 40px 30px; 
-                        text-align: center; 
-                        border-radius: 10px 10px 0 0; 
-                    }
-                    .content { 
-                        background: #ffffff; 
-                        padding: 30px; 
-                        border: 1px solid #e5e7eb; 
-                        border-top: none;
-                    }
-                    .badge { 
-                        background: #d1fae5; 
-                        color: #065f46; 
-                        padding: 10px 25px; 
-                        border-radius: 25px; 
-                        display: inline-block; 
-                        font-weight: bold; 
-                        font-size: 16px;
-                        margin: 20px 0;
-                    }
-                    .success-box {
-                        background: #ecfdf5;
-                        border: 2px solid #10b981;
-                        padding: 20px;
-                        border-radius: 10px;
-                        margin: 20px 0;
-                    }
-                    .footer { 
-                        text-align: center; 
-                        color: #6b7280; 
-                        font-size: 12px; 
-                        margin-top: 30px; 
-                        padding: 20px;
-                        border-top: 1px solid #e5e7eb;
-                    }
+                    .header { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 40px 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                    .content { background: #ffffff; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
+                    .badge { background: #d1fae5; color: #065f46; padding: 10px 25px; border-radius: 25px; display: inline-block; font-weight: bold; font-size: 16px; margin: 20px 0; }
+                    .success-box { background: #ecfdf5; border: 2px solid #10b981; padding: 20px; border-radius: 10px; margin: 20px 0; }
                 </style>
             </head>
             <body>
@@ -355,63 +253,47 @@ async function sendVerificationEmail(team) {
                                 <li><strong>Your team is now approved</strong> for TTD Darshan</li>
                                 <li>Total verified members: <strong>${team.members_count}</strong></li>
                                 <li>Carry <strong>original Aadhaar cards</strong> for all members</li>
-                                <li>Arrive at the designated time (details will be shared)</li>
                                 <li>Follow all TTD guidelines and protocols</li>
-                                <li>Maintain discipline during your visit</li>
-                            </ul>
-                        </div>
-
-                        <div style="background: #fef3c7; padding: 18px; border-radius: 8px; border-left: 4px solid #f59e0b; margin: 20px 0;">
-                            <strong>⚠️ Important Reminders:</strong>
-                            <ul style="margin: 10px 0; padding-left: 20px;">
-                                <li>Keep this email for reference</li>
-                                <li>Check your mobile for SMS updates</li>
-                                <li>Bring printed/digital copy of this verification</li>
-                                <li>Contact us immediately for any issues</li>
                             </ul>
                         </div>
 
                         <div style="text-align: center; margin: 30px 0; padding: 25px; background: linear-gradient(135deg, #dbeafe, #bfdbfe); border-radius: 12px;">
                             <p style="font-size: 22px; margin: 0; font-weight: bold;">🕉️ Om Namo Venkatesaya!</p>
-                            <p style="margin: 10px 0 0 0; font-size: 15px;">May Lord Balaji bless you and your family!</p>
+                            <p style="margin: 10px 0 0 0; font-size: 15px;">May Lord Balaji bless you!</p>
                         </div>
-
-                        <div style="text-align: center; padding: 15px; background: #f9fafb; border-radius: 8px;">
-                            <p style="margin: 0; font-size: 14px;">Need assistance?</p>
-                            <p style="margin: 8px 0;">
-                                📧 <a href="mailto:${process.env.SMTP_USER}" style="color: #2563eb;">${process.env.SMTP_USER}</a>
-                            </p>
-                        </div>
-                    </div>
-
-                    <div class="footer">
-                        <p><strong>TTD Team Registration System</strong></p>
-                        <p>© ${new Date().getFullYear()} All Rights Reserved</p>
-                        <p style="color: #9ca3af; margin-top: 10px;">
-                            This is an automated verification email.
-                        </p>
                     </div>
                 </div>
             </body>
             </html>
         `;
 
-        // Send to all members
-        for (const email of emails) {
-            await transporter.sendMail({
-                from: `"TTD Registration" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-                to: email,
-                subject: `✅ VERIFIED - ${team.team_name} | TTD Registration Approved`,
-                html
-            });
+        // Send to all team members
+        const emails = team.members.map(m => m.email).filter(Boolean);
 
-            // Small delay between emails to avoid rate limiting
+        for (const email of emails) {
+            const msg = {
+                to: email,
+                from: {
+                    email: process.env.SENDGRID_FROM_EMAIL || 'nimmalaprashanth9@gmail.com',
+                    name: 'TTD Registration'
+                },
+                subject: `✅ VERIFIED - ${team.team_name} | TTD Registration Approved`,
+                html: html
+            };
+
+            await sgMail.send(msg);
+            console.log(`✅ Verification email sent to: ${email}`);
+
+            // Small delay between emails
             await new Promise(resolve => setTimeout(resolve, 500));
         }
 
-        console.log(`✅ Verification emails sent to ${emails.length} members`);
+        console.log(`✅ All ${emails.length} verification emails sent successfully`);
     } catch (err) {
-        console.error('Failed to send verification emails:', err);
+        console.error('❌ SendGrid verification emails failed:', err);
+        if (err.response) {
+            console.error('Response body:', err.response.body);
+        }
     }
 }
 
