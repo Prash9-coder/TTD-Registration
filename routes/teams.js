@@ -536,6 +536,30 @@ router.put("/:id/verify", async (req, res) => {
     }
 });
 
+router.get('/by-aadhaar/:aadhaar', async (req, res) => {
+    try {
+        const aadhaar = req.params.aadhaar;
+
+        const member = await MemberModel.findOne({ id_number: aadhaar });
+
+        if (!member) {
+            return res.json({ success: false, exists: false });
+        }
+
+        res.json({
+            success: true,
+            exists: true,
+            data: member
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
 
 // MARK TEAM AS VERIFIED
 router.put("/:id/verify", async (req, res) => {
