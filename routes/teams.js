@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const { body, validationResult } = require('express-validator');
 const Team = require('../models/Team');
 const { encrypt } = require('../utils/encryption');
@@ -12,10 +15,58 @@ const {
     sendTeamDeletedNotification
 } = require('../services/telegramService');
 
+// ============================================
+// CLOUDINARY CONFIGURATION
+// ============================================
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
-// ===============================================
+// ============================================
+// CLOUDINARY STORAGE CONFIGURATION
+// ============================================
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'ttd-registrations',
+        allowed_formats: ['jpg', 'jpeg', 'png'],
+        transformation: [
+            { width: 800, height: 1000, crop: 'limit' },
+            { quality: 'auto:good' }
+        ],
+        public_id: (req, file) => {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            return `member-${uniqueSuffix}`;
+        }
+    }
+});
+
+// ============================================
+// FILE FILTER
+// ============================================
+const fileFilter = (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+    if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true);
+    } else {
+        cb(new Error('Only JPG/JPEG/PNG files are allowed'), false);
+    }
+};
+
+// ============================================
+// MULTER CONFIG
+// ============================================
+const upload = multer({
+    storage,
+    fileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }
+});
+
+// ============================================
 // RATE LIMIT
-// ===============================================
+// ============================================
 const submitLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 5,
@@ -26,10 +77,9 @@ const submitLimiter = rateLimit({
     keyGenerator: (req) => req.ip
 });
 
-
-// ===============================================
+// ============================================
 // VALIDATION
-// ===============================================
+// ============================================
 const teamValidation = [
     body('team_name').trim().notEmpty(),
     body('members_count').isInt({ min: 10, max: 15 }),
@@ -37,143 +87,137 @@ const teamValidation = [
     body('members').isArray({ min: 10, max: 15 })
 ];
 
+// ============================================
+// HELPERS
+// ============================================
+const mask = (value, visible = 4) => {
+    if (!value) return '';
+    return `${'*'.repeat(Math.max(0, value.length - visible))}${value.slice(-visible)}`;
+};
 
-// ===============================================
-// EMAIL / SENDGRID IMPORTS
-// ===============================================
-const sgMail = require('@sendgrid/mail');
-
-if (process.env.SENDGRID_API_KEY) {
-    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-}
-
-
-// MASK HELPER
-const mask = (value, visible = 4) =>
-    `${'*'.repeat(Math.max(0, value.length - visible))}${value.slice(-visible)}`;
-
-
-// CALCULATE AGE
 function calculateAge(dob) {
-    const d = new Date(dob);
+    if (!dob) return null;
+    
+    let d;
+    if (/^\d{2}-\d{2}-\d{4}$/.test(dob)) {
+        const [day, month, year] = dob.split('-');
+        d = new Date(year, month - 1, day);
+    } else {
+        d = new Date(dob);
+    }
+    
+    if (isNaN(d.getTime())) return null;
+    
     const t = new Date();
     let age = t.getFullYear() - d.getFullYear();
-    if (
-        t.getMonth() < d.getMonth() ||
-        (t.getMonth() === d.getMonth() && t.getDate() < d.getDate())
-    )
+    if (t.getMonth() < d.getMonth() ||
+        (t.getMonth() === d.getMonth() && t.getDate() < d.getDate())) {
         age--;
+    }
     return age;
 }
 
+// ===================================================================
+// GET ALL TEAMS
+// ===================================================================
+router.get('/', async (req, res) => {
+    try {
+        const teams = await Team.find({}).sort({ createdAt: -1 });
+        console.log(`📋 Found ${teams.length} teams`);
+        res.json({ success: true, data: teams });
+    } catch (error) {
+        console.error('❌ Error fetching teams:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
 
 // ===================================================================
-// 🚀 POST /api/teams  — REGISTER TEAM
+// CHECK TEAM NAME
+// ===================================================================
+router.get('/check-name/:teamName', async (req, res) => {
+    try {
+        const exists = await Team.findOne({
+            team_name: { $regex: new RegExp(`^${req.params.teamName}$`, 'i') }
+        });
+        res.json({ success: true, exists: !!exists });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// ===================================================================
+// UPLOAD SINGLE PHOTO
+// ===================================================================
+router.post('/photo', upload.single('photo'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+        res.json({
+            success: true,
+            message: 'Photo uploaded successfully',
+            data: {
+                filename: req.file.filename,
+                path: req.file.path,
+                url: req.file.path
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// ===================================================================
+// REGISTER TEAM
 // ===================================================================
 router.post('/', submitLimiter, teamValidation, async (req, res) => {
     try {
         const errors = validationResult(req);
-        if (!errors.isEmpty())
+        if (!errors.isEmpty()) {
             return res.status(400).json({ success: false, errors: errors.array() });
+        }
 
         const { team_name, members_count, members, consent_given } = req.body;
 
-        // Prevent duplicate team_name
         const nameExists = await Team.findOne({ team_name });
-        if (nameExists)
+        if (nameExists) {
             return res.status(400).json({ success: false, message: 'Team name already exists' });
-
-        if (members.length !== members_count)
-            return res.status(400).json({
-                success: false,
-                message: 'members_count mismatch'
-            });
+        }
 
         const processedMembers = [];
         const aadhaarSet = new Set();
 
         for (let i = 0; i < members.length; i++) {
             const m = members[i];
-
-            // Aadhaar validation
             const aadhaar = validateAadhaar(m.id_number);
-            if (!aadhaar.valid)
-                return res.status(400).json({
-                    success: false,
-                    message: `Member ${i + 1}: ${aadhaar.message}`
-                });
 
-            // Avoid duplicates inside team
-            if (aadhaarSet.has(m.id_number))
-                return res.status(400).json({
-                    success: false,
-                    message: `Duplicate Aadhaar at member ${i + 1}`
-                });
+            if (!aadhaar.valid) {
+                return res.status(400).json({ success: false, message: aadhaar.message });
+            }
+
+            if (aadhaarSet.has(m.id_number)) {
+                return res.status(400).json({ success: false, message: 'Duplicate Aadhaar found' });
+            }
+
             aadhaarSet.add(m.id_number);
 
-            // Avoid duplicate across DB (encrypted)
-            const exists = await Team.findOne({
-                'members.id_number_encrypted': encrypt(m.id_number)
-            });
-
-            if (exists)
-                return res.status(400).json({
-                    success: false,
-                    message: `Aadhaar of member ${i + 1} already registered`
-                });
-
             const age = calculateAge(m.dob);
-            if (age < 5)
-                return res.status(400).json({
-                    success: false,
-                    message: `Member ${i + 1} must be ≥ 5 years`
-                });
-
-            // ✅ Photo validation - must be full Cloudinary URL
-            const photoUrl = m.photo_path;
-
-            if (!photoUrl || !photoUrl.startsWith('http')) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Invalid or missing photo for member ${i + 1}`
-                });
+            if (age !== null && age < 5) {
+                return res.status(400).json({ success: false, message: 'Age must be ≥ 5' });
             }
 
             processedMembers.push({
-                name: m.name,
-                dob: new Date(m.dob),
+                ...m,
                 age,
-                gender: m.gender,
-                id_proof_type: m.id_proof_type || 'Aadhaar',
-
-                id_number_full: m.id_number,
-                mobile_full: m.mobile,
-
                 id_number_encrypted: encrypt(m.id_number),
                 mobile_encrypted: encrypt(m.mobile),
-
                 id_number_masked: mask(m.id_number),
                 mobile_masked: mask(m.mobile),
-
-                email: m.email,
-                state: m.state,
-                district: m.district,
-                city: m.city,
-                street: m.street,
-                doorno: m.doorno,
-                pincode: m.pincode,
-                nearest_ttd_temple: m.nearest_ttd_temple,
-
-                // ✅ Store full Cloudinary URL as-is
-                photo_path: photoUrl,
-                photo_uploaded_at: new Date(),
-
-                aadhaar_verified: false
+                photo_path: m.photo_path
             });
         }
 
-        // CREATE TEAM
-        const newTeam = new Team({
+        const team = new Team({
             team_name,
             members_count,
             members: processedMembers,
@@ -182,149 +226,15 @@ router.post('/', submitLimiter, teamValidation, async (req, res) => {
             submitted_by_ip: req.ip
         });
 
-        await newTeam.save();
+        await team.save();
+        sendNewTeamNotification(team).catch(() => {});
 
-        // SEND EMAILS / TELEGRAM
-        sendNewTeamNotification(newTeam).catch(() => { });
-
-        return res.status(201).json({
-            success: true,
-            message: 'Team registered successfully',
-            data: {
-                team_id: newTeam._id,
-                team_name: newTeam.team_name,
-                members_count: newTeam.members_count,
-                submitted_at: newTeam.created_at
-            }
-        });
-
+        res.status(201).json({ success: true, message: 'Team registered successfully' });
     } catch (e) {
-        console.error('Team registration error:', e);
-        res.status(500).json({ success: false, message: 'Failed to register team' });
+        console.error('❌ Registration error:', e);
+        res.status(500).json({ success: false, message: 'Registration failed' });
     }
 });
-
-
-// ===================================================================
-// ✅ GET ALL TEAMS WITH MEMBERS & PHOTOS
-// ===================================================================
-router.get('/', async (req, res) => {
-    try {
-        const teams = await Team.find({})
-            .select('_id team_name members_count submission_status created_at members')  // ✅ Added 'members'
-            .sort({ created_at: -1 })
-            .lean();
-
-        // Transform members to include safe data
-        const transformedTeams = teams.map(team => ({
-            _id: team._id,
-            team_name: team.team_name,
-            members_count: team.members_count,
-            submission_status: team.submission_status,
-            created_at: team.created_at,
-            members: team.members.map(m => ({
-                name: m.name,
-                dob: m.dob,
-                age: m.age,
-                gender: m.gender,
-                id_number: m.id_number_masked,  // Masked for security
-                mobile: m.mobile_masked,
-                email: m.email,
-                state: m.state,
-                district: m.district,
-                city: m.city,
-                street: m.street,
-                doorno: m.doorno,
-                pincode: m.pincode,
-                nearest_ttd_temple: m.nearest_ttd_temple,
-                photo_path: m.photo_path,  // ✅ Full Cloudinary URL
-                aadhaar_verified: m.aadhaar_verified
-            }))
-        }));
-
-        res.json({
-            success: true,
-            count: transformedTeams.length,
-            data: transformedTeams
-        });
-
-    } catch (e) {
-        console.error('Get teams error:', e);
-        res.status(500).json({ success: false, message: 'Failed to retrieve teams' });
-    }
-});
-
-
-// ===================================================================
-// ✅ GET SINGLE TEAM BY ID
-// ===================================================================
-router.get('/:id', async (req, res) => {
-    try {
-        const team = await Team.findById(req.params.id).lean();
-
-        if (!team)
-            return res.status(404).json({ success: false, message: 'Team not found' });
-
-        // Transform members with full details
-        team.members = team.members.map(m => ({
-            name: m.name,
-            dob: m.dob,
-            age: m.age,
-            gender: m.gender,
-            id_number: m.id_number_full,  // Full for detailed view
-            mobile: m.mobile_full,
-            email: m.email,
-            state: m.state,
-            district: m.district,
-            city: m.city,
-            street: m.street,
-            doorno: m.doorno,
-            pincode: m.pincode,
-            nearest_ttd_temple: m.nearest_ttd_temple,
-            photo_path: m.photo_path,  // ✅ Already full Cloudinary URL
-            aadhaar_verified: m.aadhaar_verified
-        }));
-
-        res.json({ success: true, data: team });
-
-    } catch (e) {
-        console.error('Get team error:', e);
-        res.status(500).json({ success: false, message: 'Failed to retrieve team' });
-    }
-});
-
-
-// ===================================================================
-// CHECK TEAM NAME AVAILABILITY
-// ===================================================================
-router.get('/check-name/:teamName', async (req, res) => {
-    try {
-        const teamName = req.params.teamName.trim();
-
-        if (!teamName || teamName.length < 3) {
-            return res.json({
-                success: true,
-                exists: false,
-                message: 'Team name too short'
-            });
-        }
-
-        const exists = await Team.findOne({
-            team_name: { $regex: new RegExp(`^${teamName}$`, 'i') }
-        });
-
-        res.json({
-            success: true,
-            exists: !!exists,
-            message: exists ? 'Team name already exists' : 'Team name available'
-        });
-
-    } catch (e) {
-        console.error('Check name error:', e);
-        res.status(500).json({ success: false, message: 'Check failed' });
-    }
-});
-
 
 // ===================================================================
 // VERIFY TEAM
@@ -337,19 +247,118 @@ router.put('/:id/verify', async (req, res) => {
             { new: true }
         );
 
-        if (!team)
+        if (!team) {
             return res.status(404).json({ success: false, message: 'Team not found' });
+        }
 
-        sendTeamVerifiedNotification(team).catch(() => { });
-
-        res.json({ success: true, message: 'Team verified', data: team });
-
-    } catch (e) {
-        console.error('Verify team error:', e);
-        res.status(500).json({ success: false, message: 'Verification failed' });
+        sendTeamVerifiedNotification(team).catch(() => {});
+        res.json({ success: true, message: 'Team verified', team });
+    } catch (error) {
+        console.error('❌ Verify error:', error);
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
+// ===================================================================
+// ✅ UPDATE TEAM (ADMIN EDIT) - FIXED VERSION
+// ===================================================================
+router.put('/:id', async (req, res) => {
+    try {
+        const teamId = req.params.id;
+        console.log('═'.repeat(50));
+        console.log('📝 PUT /api/teams/:id');
+        console.log('📝 Team ID:', teamId);
+        console.log('📦 Body keys:', Object.keys(req.body));
+        
+        // Validate ObjectId
+        if (!/^[0-9a-fA-F]{24}$/.test(teamId)) {
+            console.log('❌ Invalid ObjectId format');
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Invalid team ID format' 
+            });
+        }
+
+        // Find team
+        const team = await Team.findById(teamId);
+        
+        if (!team) {
+            console.log('❌ Team not found:', teamId);
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Team not found'
+            });
+        }
+
+        console.log('✅ Team found:', team.team_name);
+
+        // Update fields
+        const { team_name, admin_notes, members, submission_status } = req.body;
+
+        if (team_name !== undefined) {
+            team.team_name = team_name;
+        }
+        
+        if (admin_notes !== undefined) {
+            team.admin_notes = admin_notes;
+        }
+        
+        if (submission_status !== undefined) {
+            team.submission_status = submission_status;
+        }
+
+        // Update members
+        if (members && Array.isArray(members)) {
+            console.log('📝 Updating', members.length, 'members');
+            
+            team.members = members.map((newMember, index) => {
+                const existingMember = team.members[index] || {};
+                
+                return {
+                    ...existingMember,
+                    ...newMember,
+                    // Preserve or update encrypted data
+                    id_number_encrypted: existingMember.id_number_encrypted,
+                    mobile_encrypted: existingMember.mobile_encrypted,
+                    // Update masked values if full values provided
+                    id_number_masked: newMember.id_number 
+                        ? mask(newMember.id_number) 
+                        : (existingMember.id_number_masked || newMember.id_number_masked),
+                    mobile_masked: newMember.mobile 
+                        ? mask(newMember.mobile) 
+                        : (existingMember.mobile_masked || newMember.mobile_masked),
+                    // Recalculate age if DOB changed
+                    age: newMember.dob 
+                        ? (calculateAge(newMember.dob) || newMember.age)
+                        : (newMember.age || existingMember.age)
+                };
+            });
+            
+            team.members_count = members.length;
+        }
+
+        // Update timestamp
+        team.updated_at = new Date();
+
+        // Save
+        await team.save();
+        console.log('✅ Team updated successfully');
+        console.log('═'.repeat(50));
+
+        res.json({ 
+            success: true, 
+            message: 'Team updated successfully',
+            team: team
+        });
+
+    } catch (error) {
+        console.error('❌ Update error:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Update failed: ' + error.message 
+        });
+    }
+});
 
 // ===================================================================
 // DELETE TEAM
@@ -357,19 +366,46 @@ router.put('/:id/verify', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const team = await Team.findByIdAndDelete(req.params.id);
-
-        if (!team)
+        if (!team) {
             return res.status(404).json({ success: false, message: 'Team not found' });
+        }
 
-        sendTeamDeletedNotification(team).catch(() => { });
-
-        res.json({ success: true, message: 'Team deleted successfully' });
-
-    } catch (e) {
-        console.error('Delete team error:', e);
-        res.status(500).json({ success: false, message: 'Delete failed' });
+        sendTeamDeletedNotification(team).catch(() => {});
+        res.json({ success: true, message: 'Team deleted' });
+    } catch (error) {
+        console.error('❌ Delete error:', error);
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
+// ===================================================================
+// GET SINGLE TEAM (Keep LAST!)
+// ===================================================================
+router.get('/:id', async (req, res) => {
+    try {
+        const teamId = req.params.id;
+        
+        if (!/^[0-9a-fA-F]{24}$/.test(teamId)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Invalid team ID format' 
+            });
+        }
+        
+        const team = await Team.findById(teamId);
+        
+        if (!team) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Team not found' 
+            });
+        }
+
+        res.json({ success: true, data: team });
+    } catch (error) {
+        console.error('❌ Get team error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
 
 module.exports = router;
